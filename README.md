@@ -70,13 +70,36 @@ pip3 install feedparser
 ```
 ./output/
 ├── Episode Title 1/
-│   └── Episode Title 1.strm
+│   ├── Episode Title 1.strm      (URL to video)
+│   └── Episode Title 1.nfo       (Metadata for chronological sorting)
 ├── Episode Title 2/
-│   └── Episode Title 2.strm
+│   ├── Episode Title 2.strm      (URL to video)
+│   └── Episode Title 2.nfo       (Metadata for chronological sorting)
 └── ...
 ```
 
-Each `.strm` file contains a single line: the direct URL to the video file.
+### File Types
+
+**STRM File**: Plain text file containing a single line with the direct video URL
+```
+https://example.com/video.mp4
+```
+
+**NFO File**: XML metadata file for Jellyfin/Kodi with:
+- Episode title
+- Air date (for chronological sorting)
+- Plot/description
+- Season/episode info
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<episodedetails>
+  <title>Episode Title</title>
+  <aired>2025-10-14</aired>
+  <plot>Episode description...</plot>
+  <season>1</season>
+  <episode>1</episode>
+</episodedetails>
+```
 
 ## Example RSS Feeds
 
@@ -98,16 +121,49 @@ rssurl = "https://podcast-feed.example.com/feed.xml"
 output_library = "./output/podcasts/"
 ```
 
+## Using with Jellyfin/Kodi
+
+### Jellyfin Setup for Chronological Sorting
+
+1. **Add Library**: 
+   - Settings → Libraries → Add Media Library
+   - Choose folder → Select output directory
+   - Content type: "Shows"
+
+2. **Metadata Integration**:
+   - Jellyfin automatically reads `.nfo` files
+   - Videos sorted chronologically by `<aired>` date
+   - Episode titles, descriptions, and metadata displayed
+
+3. **Example Result** (chronological order):
+   ```
+   Drohnenalarm (aired: 2025-10-01)
+   Deutsche Autos (aired: 2025-10-09)
+   maischberger am 14.10.2025 (aired: 2025-10-14)
+   Markus Lanz (aired: 2025-10-16)
+   ```
+
+### Kodi Setup
+
+Similar to Jellyfin:
+1. Add folder to library
+2. Kodi reads `.strm` and `.nfo` files automatically
+3. Content appears with full metadata
+4. Sorted by aired date
+
 ## Logging
 
 The script provides detailed logging output:
 
 ```
-2025-10-20 02:39:06 - INFO - Fetching RSS feed from: https://...
-2025-10-20 02:39:06 - INFO - Found 50 entries in RSS feed
-2025-10-20 02:39:06 - INFO - ✓ Processing: Episode Title
-2025-10-20 02:39:06 - INFO -   Video URL: https://...mp4
-2025-10-20 02:39:06 - INFO -   Source: rss_enclosure
+2025-10-20 04:16:32 - INFO - Fetching RSS feed from: https://...
+2025-10-20 04:16:32 - INFO - Found 50 entries in RSS feed
+2025-10-20 04:16:32 - INFO - ✓ Processing: Episode Title
+2025-10-20 04:16:32 - INFO -   Video URL: https://...mp4
+2025-10-20 04:16:32 - INFO -   Source: rss_enclosure
+2025-10-20 04:16:32 - INFO -   Aired: 2025-10-14
+2025-10-20 04:16:32 - INFO - Creating STRM file: ./output/Episode Title/Episode Title.strm
+2025-10-20 04:16:32 - INFO - Creating NFO file: ./output/Episode Title/Episode Title.nfo
 ```
 
 ### URL Detection Sources

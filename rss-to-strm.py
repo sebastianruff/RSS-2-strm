@@ -50,6 +50,9 @@ import urllib.request
 import re
 import shutil
 import tempfile
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+import xml.etree.ElementTree as ET
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -262,10 +265,106 @@ def get_feed(url):
             logging.debug(f"⚠ No video URL found for entry: {entry_title}")
             continue
         
+        # Extract metadata for NFO file with namespace awareness
+        metadata = {
+            'title': entry_title,
+            'aired': None,
+            'summary': None,
+            'author': None,
+            'tags': [],
+            'duration': None,
+            'source_url': video_url
+        }
+        
+        # 1. Extract title from various namespace sources
+        # Priority: explicit title_detail > dc:title > entry title
+        if 'title' in entry:
+            metadata['title'] = entry_title
+        
+        # 2. Extract aired date from various sources
+        aired_date = None
+        
+        # Priority 1: 'published' field (standard RSS)
+        if 'published' in entry:
+            try:
+                aired_dt = parsedate_to_datetime(entry['published'])
+                aired_date = aired_dt.strftime('%Y-%m-%d')
+                logging.debug(f"✓ Extracted aired date from 'published': {aired_date}")
+            except Exception as e:
+                logging.debug(f"Could not parse published date: {entry.get('published')}")
+        
+        # Priority 2: 'updated' field (Atom namespace fallback)
+        if not aired_date and 'updated' in entry:
+            try:
+                updated_dt = parsedate_to_datetime(entry['updated'])
+                aired_date = updated_dt.strftime('%Y-%m-%d')
+                logging.debug(f"✓ Extracted aired date from 'updated' (Atom): {aired_date}")
+            except Exception as e:
+                logging.debug(f"Could not parse updated date: {entry.get('updated')}")
+        
+        metadata['aired'] = aired_date
+        
+        # 3. Extract description/summary from various namespace sources
+        # Priority: content:encoded > summary > dc:description
+        summary_text = None
+        
+        # Priority 1: content:encoded (Content Module namespace)
+        if 'content' in entry and isinstance(entry.content, list) and entry.content:
+            content_value = entry.content[0].get('value', '')
+            # Strip HTML tags
+            summary_text = re.sub('<[^<]+?>', '', content_value).strip()
+            logging.debug(f"✓ Extracted summary from content:encoded namespace")
+        
+        # Priority 2: summary field (standard RSS)
+        if not summary_text and 'summary' in entry:
+            summary_text = entry.get('summary', '').strip()
+            logging.debug(f"✓ Extracted summary from 'summary' field")
+        
+        # Priority 3: subtitle (alternative)
+        if not summary_text and 'subtitle' in entry:
+            summary_text = entry.get('subtitle', '').strip()
+            logging.debug(f"✓ Extracted summary from 'subtitle' field")
+        
+        # Limit to 500 chars
+        if summary_text:
+            metadata['summary'] = summary_text[:500]
+        
+        # 4. Extract author information (Dublin Core & standard)
+        # Priority: author (dc:creator equivalent) > contributor
+        if 'author' in entry:
+            metadata['author'] = entry.get('author')
+            logging.debug(f"✓ Extracted author: {metadata['author']}")
+        elif 'author_detail' in entry:
+            author_detail = entry.get('author_detail', {})
+            if isinstance(author_detail, dict):
+                metadata['author'] = author_detail.get('name', author_detail.get('href'))
+                logging.debug(f"✓ Extracted author from author_detail: {metadata['author']}")
+        
+        # 5. Extract tags/categories (RSS categories or custom tags)
+        if 'tags' in entry and entry.tags:
+            metadata['tags'] = [tag.get('term', tag) for tag in entry.tags]
+            logging.debug(f"✓ Extracted tags: {metadata['tags']}")
+        
+        # 6. Extract duration if available (Media RSS namespace)
+        if 'duration' in entry:
+            try:
+                duration_sec = int(entry.get('duration', 0))
+                duration_min = duration_sec // 60
+                metadata['duration'] = f"{duration_min} min"
+                logging.debug(f"✓ Extracted duration: {metadata['duration']}")
+            except:
+                pass
+        
         logging.info(f"✓ Processing: {entry_title}")
         logging.info(f"  Video URL: {video_url}")
         logging.info(f"  Source: {source}")
-        dict[entry_title] = [video_url]
+        if metadata['aired']:
+            logging.info(f"  Aired: {metadata['aired']}")
+        
+        dict[entry_title] = {
+            'url': video_url,
+            'metadata': metadata
+        }
     
     return dict
 
@@ -277,27 +376,82 @@ def normalize_filename(str):
         str = str.replace(char, '')
     return str
 
-#create directories and write out strm files if they don't exist
+def create_nfo_xml(metadata):
+    """Create NFO XML content for Jellyfin/Kodi metadata with namespace-aware fields"""
+    root = ET.Element('episodedetails')
+    
+    # Title
+    title_elem = ET.SubElement(root, 'title')
+    title_elem.text = metadata.get('title', 'Unknown')
+    
+    # Aired date (for chronological sorting)
+    if metadata.get('aired'):
+        aired_elem = ET.SubElement(root, 'aired')
+        aired_elem.text = metadata['aired']
+    
+    # Plot/Description (from content:encoded or summary)
+    if metadata.get('summary'):
+        plot_elem = ET.SubElement(root, 'plot')
+        plot_elem.text = metadata['summary']
+    
+    # Director/Author (from dc:creator or author field)
+    if metadata.get('author'):
+        director_elem = ET.SubElement(root, 'director')
+        director_elem.text = metadata['author']
+    
+    # Genre/Tags (from category or tags)
+    if metadata.get('tags'):
+        for tag in metadata['tags']:
+            genre_elem = ET.SubElement(root, 'genre')
+            genre_elem.text = tag
+    
+    # Duration (from Media RSS namespace)
+    if metadata.get('duration'):
+        runtime_elem = ET.SubElement(root, 'runtime')
+        runtime_elem.text = metadata['duration']
+    
+    # Add generic season/episode info for organization
+    season_elem = ET.SubElement(root, 'season')
+    season_elem.text = '1'
+    
+    episode_elem = ET.SubElement(root, 'episode')
+    episode_elem.text = '1'
+    
+    # Indent for readability
+    ET.indent(root, space='  ')
+    
+    return ET.tostring(root, encoding='unicode')
+
+#create directories and write out strm and nfo files
 def write_strm_files(video_dict, temp_output_library):
     logging.info(f"Processing {len(video_dict)} items")
     for item_title in video_dict:
-        for video_url in video_dict[item_title]:
-            video_basename = os.path.splitext(os.path.basename(video_url))[0] #get the video filename without extension so we can add a .strm to the end
-            
-            item_path = os.path.join(temp_output_library, normalize_filename(item_title))   #output example ./output/Item
-            item_strm = os.path.join(item_path, normalize_filename(item_title) + ".strm")
+        item_data = video_dict[item_title]
+        video_url = item_data['url']
+        metadata = item_data['metadata']
+        
+        item_path = os.path.join(temp_output_library, normalize_filename(item_title))
+        item_strm = os.path.join(item_path, normalize_filename(item_title) + ".strm")
+        item_nfo = os.path.join(item_path, normalize_filename(item_title) + ".nfo")
 
-            if not os.path.exists(temp_output_library):
-                logging.debug(f"Creating library directory: {temp_output_library}")
-                os.mkdir(temp_output_library)                
-            if not os.path.exists(item_path):
-                logging.debug(f"Creating item directory: {item_path}")
-                os.mkdir(item_path)
-            
-            logging.info(f"Creating item STRM file: {item_strm}")
-            f = open(item_strm, "w")
+        if not os.path.exists(temp_output_library):
+            logging.debug(f"Creating library directory: {temp_output_library}")
+            os.mkdir(temp_output_library)                
+        if not os.path.exists(item_path):
+            logging.debug(f"Creating item directory: {item_path}")
+            os.mkdir(item_path)
+        
+        # Write STRM file (URL pointer)
+        logging.info(f"Creating STRM file: {item_strm}")
+        with open(item_strm, "w") as f:
             f.write(video_url)
-            f.close()                    
+        
+        # Write NFO file (metadata for chronological sorting)
+        logging.info(f"Creating NFO file: {item_nfo}")
+        nfo_content = create_nfo_xml(metadata)
+        with open(item_nfo, "w", encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+            f.write(nfo_content)                    
 
 
 
