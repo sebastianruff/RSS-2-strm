@@ -65,6 +65,8 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # Configuration - can be overridden via command line arguments
 rssurl               = "https://mediathekviewweb.de/feed?query=%3E30%20%23markus%2CLanz%20%23maischberger%20%23caren%2Cmiosga%20%23presseclub%20%23hart%2Caber%2Cfair%20%23maybrit%2Cillner%20%23phoenix%2Crunde%20%23internationaler%2Cfr%C3%BChschoppen&everywhere=true"  #url of the rss feed
 output_library       = "./output/"      #base path for output library
+filter_keywords      = "Gebärdensprache"               #comma-separated list of keywords to filter out (case-insensitive). Items with matching titles are excluded.
+                                        #example: "Gebärdensprache,Untertitel,Preview"
 
 # Parse command line arguments
 if len(sys.argv) > 1:
@@ -74,11 +76,20 @@ if len(sys.argv) > 1:
 if len(sys.argv) > 2:
     output_library = sys.argv[2]
     logging.info(f"Output library override via command line: {output_library}")
-#************************************************************************************************************************
+
+if len(sys.argv) > 3:
+    filter_keywords = sys.argv[3]
+    logging.info(f"Filter keywords override via command line: {filter_keywords}")
+
+# Parse filter keywords into a list (case-insensitive matching)
+filter_list = [keyword.strip().lower() for keyword in filter_keywords.split(',') if keyword.strip()]
+if filter_list:
+    logging.info(f"Filter keywords active: {filter_list}")
 
 logging.info(f"Configuration - RSS URL: {rssurl}")
 logging.info(f"Configuration - Output Library: {output_library}")
 logging.info(f"Configuration - Absolute Output Library Path: {os.path.abspath(output_library)}")
+#************************************************************************************************************************
 
 
 #use feedparser to grab rss feed and extract all video urls
@@ -241,7 +252,18 @@ def get_feed(url):
         except:
             entry_title = entry['title']
         
-        # Comprehensive URL extraction with multiple fallback strategies
+        # Check if title should be filtered out (case-insensitive)
+        should_filter = False
+        if filter_list:
+            title_lower = entry_title.lower()
+            for keyword in filter_list:
+                if keyword in title_lower:
+                    logging.info(f"⊘ Filtered out: {entry_title} (matches keyword: '{keyword}')")
+                    should_filter = True
+                    break
+        
+        if should_filter:
+            continue
         video_url = None
         source = None
         
