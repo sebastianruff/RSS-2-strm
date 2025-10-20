@@ -9,9 +9,16 @@ A robust, namespace-aware converter that transforms RSS 2.0 feeds (videos, podca
 - Multi-layer URL detection with structured fallbacks
 - Atomic file operations with automatic rollback on errors
 
+✅ **Thumbnail Support** 🎬 **NEW**
+- Automatic thumbnail extraction from multiple RSS namespaces
+- 6-layer priority-based fallback system
+- Automatic download and local storage
+- Remote URL fallback in metadata
+- Support for multiple image formats (JPEG, PNG, WebP, GIF)
+
 ✅ **Namespace Support**
 - **RSS 2.0 Standard**: `<enclosure>`, `<link>` elements with MIME type detection
-- **Media RSS**: `<media:content>`, `<media:player>` elements
+- **Media RSS**: `<media:content>`, `<media:player>`, `<media:thumbnail>` elements
 - **Dublin Core**: `<dc:creator>`, `<dc:date>` metadata
 - **Atom Feed Format**: `<atom:link>` with content-type attributes
 - **RSS Content Module**: `<content:encoded>` with embedded media
@@ -54,10 +61,20 @@ pip3 install feedparser
    ```python
    rssurl = "https://your-rss-feed-url.com/feed"
    ```
+   
+   Or pass it as command line argument:
+   ```bash
+   python3 rss-to-strm.py "https://your-rss-feed-url.com/feed"
+   ```
 
 2. **Configure output directory** (optional):
    ```python
    output_library = "./output/"  # or your preferred path
+   ```
+   
+   Or pass it as second argument:
+   ```bash
+   python3 rss-to-strm.py "feed-url" "/path/to/output"
    ```
 
 3. **Run the script**:
@@ -70,11 +87,13 @@ pip3 install feedparser
 ```
 ./output/
 ├── Episode Title 1/
-│   ├── Episode Title 1.strm      (URL to video)
-│   └── Episode Title 1.nfo       (Metadata for chronological sorting)
+│   ├── Episode Title 1.strm         (URL to video)
+│   ├── Episode Title 1.nfo          (Metadata for Jellyfin)
+│   └── Episode Title 1.jpg          (Thumbnail - if available)
 ├── Episode Title 2/
-│   ├── Episode Title 2.strm      (URL to video)
-│   └── Episode Title 2.nfo       (Metadata for chronological sorting)
+│   ├── Episode Title 2.strm         (URL to video)
+│   ├── Episode Title 2.nfo          (Metadata for Jellyfin)
+│   └── Episode Title 2.jpg          (Thumbnail - if available)
 └── ...
 ```
 
@@ -89,17 +108,30 @@ https://example.com/video.mp4
 - Episode title
 - Air date (for chronological sorting)
 - Plot/description
-- Season/episode info
+- Director/author information
+- Genres/categories (tags)
+- Duration
+- Thumbnail URL (local or remote)
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <episodedetails>
   <title>Episode Title</title>
   <aired>2025-10-14</aired>
   <plot>Episode description...</plot>
+  <director>Studio Name</director>
+  <genre>Category</genre>
+  <runtime>44 min</runtime>
+  <thumb>https://example.com/thumbnail.jpg</thumb>
+  <cover>https://example.com/thumbnail.jpg</cover>
   <season>1</season>
   <episode>1</episode>
 </episodedetails>
 ```
+
+**Thumbnail File**: Automatically downloaded image (if available in RSS)
+- Format: JPEG, PNG, WebP, or GIF
+- Saved locally in item directory
+- Referenced in NFO metadata
 
 ## Example RSS Feeds
 
@@ -240,7 +272,27 @@ The script implements a **structured, namespace-aware** approach rather than tri
 - Verify write permissions to output directory
 - Review logs for specific error messages
 
+### No thumbnail images (.jpg files)
+- This is **normal** - many feeds don't contain thumbnail information
+- See **FAQ.md** for detailed troubleshooting
+- Quick test: `python3 rss-to-strm.py "/tmp/demo_feed_with_thumbnails.xml"`
+- This should generate 4 .jpg files from the demo feed
+
+## FAQ
+
+**Q: Why are there no .jpg thumbnail files?**  
+A: Your feed may not contain thumbnail URLs. This is normal! See [FAQ.md](FAQ.md) for details.
+
+**Q: How do I test if thumbnail support works?**  
+A: Use the demo feed: `python3 create_demo_feed.py` then run the converter with it.
+
+**Q: Do I need thumbnails for Jellyfin to work?**  
+A: No! Videos play fine without thumbnails. Thumbnails are optional.
+
+For more questions, see **[FAQ.md](FAQ.md)**
+
 ## Future Enhancements
+
 
 - [ ] Support for multiple video qualities (use highest resolution)
 - [ ] Subtitle extraction (.srt, .ass files)

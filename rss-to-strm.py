@@ -50,6 +50,7 @@ import urllib.request
 import re
 import shutil
 import tempfile
+import sys
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 import xml.etree.ElementTree as ET
@@ -61,8 +62,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 ssl._create_default_https_context = ssl._create_unverified_context
 
 #************************************************************************************************************************
+# Configuration - can be overridden via command line arguments
 rssurl               = "https://mediathekviewweb.de/feed?query=%3E30%20%23markus%2CLanz%20%23maischberger%20%23caren%2Cmiosga%20%23presseclub%20%23hart%2Caber%2Cfair%20%23maybrit%2Cillner%20%23phoenix%2Crunde%20%23internationaler%2Cfr%C3%BChschoppen&everywhere=true"  #url of the rss feed
 output_library       = "./output/"      #base path for output library
+
+# Parse command line arguments
+if len(sys.argv) > 1:
+    rssurl = sys.argv[1]
+    logging.info(f"RSS URL override via command line: {rssurl}")
+
+if len(sys.argv) > 2:
+    output_library = sys.argv[2]
+    logging.info(f"Output library override via command line: {output_library}")
 #************************************************************************************************************************
 
 logging.info(f"Configuration - RSS URL: {rssurl}")
@@ -273,6 +284,7 @@ def get_feed(url):
             'author': None,
             'tags': [],
             'duration': None,
+            'thumbnail': None,  # NEW: Thumbnail URL
             'source_url': video_url
         }
         
@@ -355,6 +367,75 @@ def get_feed(url):
             except:
                 pass
         
+        # 7. Extract thumbnail/image with namespace awareness
+        # Priority 1: media:thumbnail (Media RSS namespace)
+        if 'media_thumbnail' in entry and entry.media_thumbnail:
+            thumbnail_url = entry.media_thumbnail[0].get('url')
+            if thumbnail_url:
+                metadata['thumbnail'] = thumbnail_url
+                logging.debug(f"✓ Extracted thumbnail from media:thumbnail")
+        
+        # Priority 2: media:content with thumbnail (Media RSS)
+        if not metadata['thumbnail'] and 'media_content' in entry:
+            for media in entry.media_content:
+                if media.get('medium') == 'image' or 'image' in media.get('type', '').lower():
+                    thumbnail_url = media.get('url')
+                    if thumbnail_url:
+                        metadata['thumbnail'] = thumbnail_url
+                        logging.debug(f"✓ Extracted thumbnail from media:content")
+                        break
+        
+        # Priority 3: image element (various RSS formats)
+        if not metadata['thumbnail'] and 'image' in entry:
+            image_data = entry.get('image')
+            if isinstance(image_data, dict):
+                thumbnail_url = image_data.get('url')
+                if thumbnail_url:
+                    metadata['thumbnail'] = thumbnail_url
+                    logging.debug(f"✓ Extracted thumbnail from image element")
+            elif isinstance(image_data, str):
+                metadata['thumbnail'] = image_data
+                logging.debug(f"✓ Extracted thumbnail from image string")
+        
+        # Priority 4: RSS enclosure with image MIME type
+        if not metadata['thumbnail'] and 'enclosures' in entry:
+            for enclosure in entry.enclosures:
+                if 'image' in enclosure.get('type', '').lower():
+                    thumbnail_url = enclosure.get('href')
+                    if thumbnail_url:
+                        metadata['thumbnail'] = thumbnail_url
+                        logging.debug(f"✓ Extracted thumbnail from image enclosure")
+                        break
+        
+        # Priority 5: links array with image relation/type
+        if not metadata['thumbnail'] and 'links' in entry:
+            for link in entry.links:
+                link_type = link.get('type', '').lower()
+                link_rel = link.get('rel', '').lower()
+                if 'image' in link_type or 'image' in link_rel or link_rel == 'preview':
+                    thumbnail_url = link.get('href')
+                    if thumbnail_url:
+                        metadata['thumbnail'] = thumbnail_url
+                        logging.debug(f"✓ Extracted thumbnail from links (rel={link_rel})")
+                        break
+        
+        # Priority 6: Try to extract from summary/HTML (last resort)
+        if not metadata['thumbnail'] and 'summary' in entry:
+            summary = entry.get('summary', '')
+            # Look for img tags with src attributes
+            img_urls = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary)
+            if img_urls:
+                # Filter for image URLs (jpg, png, webp, etc)
+                image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp')
+                for url in img_urls:
+                    if url.lower().endswith(image_extensions):
+                        metadata['thumbnail'] = url
+                        logging.debug(f"✓ Extracted thumbnail from summary HTML")
+                        break
+        
+        if metadata['thumbnail']:
+            logging.info(f"  Thumbnail: {metadata['thumbnail'][:60]}...")
+        
         logging.info(f"✓ Processing: {entry_title}")
         logging.info(f"  Video URL: {video_url}")
         logging.info(f"  Source: {source}")
@@ -410,6 +491,14 @@ def create_nfo_xml(metadata):
         runtime_elem = ET.SubElement(root, 'runtime')
         runtime_elem.text = metadata['duration']
     
+    # Thumbnail/Cover image (from various namespace sources)
+    if metadata.get('thumbnail'):
+        thumb_elem = ET.SubElement(root, 'thumb')
+        thumb_elem.text = metadata['thumbnail']
+        # Also add as cover (Jellyfin compatibility)
+        cover_elem = ET.SubElement(root, 'cover')
+        cover_elem.text = metadata['thumbnail']
+    
     # Add generic season/episode info for organization
     season_elem = ET.SubElement(root, 'season')
     season_elem.text = '1'
@@ -451,7 +540,57 @@ def write_strm_files(video_dict, temp_output_library):
         nfo_content = create_nfo_xml(metadata)
         with open(item_nfo, "w", encoding='utf-8') as f:
             f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-            f.write(nfo_content)                    
+            f.write(nfo_content)
+        
+        # Download and save thumbnail if URL available
+        if metadata.get('thumbnail'):
+            thumbnail_url = metadata['thumbnail']
+            
+            # Determine file extension from URL
+            thumb_filename = None
+            if thumbnail_url.lower().endswith(('.jpg', '.jpeg')):
+                thumb_filename = normalize_filename(item_title) + ".jpg"
+            elif thumbnail_url.lower().endswith('.png'):
+                thumb_filename = normalize_filename(item_title) + ".png"
+            elif thumbnail_url.lower().endswith('.webp'):
+                thumb_filename = normalize_filename(item_title) + ".webp"
+            elif thumbnail_url.lower().endswith('.gif'):
+                thumb_filename = normalize_filename(item_title) + ".gif"
+            else:
+                # Try to extract from URL query parameters
+                if '?' in thumbnail_url:
+                    base_url = thumbnail_url.split('?')[0]
+                    if base_url.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')):
+                        ext = base_url.split('.')[-1]
+                        thumb_filename = normalize_filename(item_title) + "." + ext
+                        logging.debug(f"✓ Extracted extension from URL base: {ext}")
+                
+                # If still no filename, default to jpg
+                if not thumb_filename:
+                    thumb_filename = normalize_filename(item_title) + ".jpg"
+            
+            if thumb_filename:
+                item_thumb = os.path.join(item_path, thumb_filename)
+                try:
+                    logging.info(f"Downloading thumbnail: {item_thumb}")
+                    # Download thumbnail with SSL context bypass
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    urllib.request.urlopen(thumbnail_url, context=ctx).read()
+                    
+                    with urllib.request.urlopen(thumbnail_url, context=ctx) as response:
+                        thumbnail_data = response.read()
+                    
+                    with open(item_thumb, 'wb') as f:
+                        f.write(thumbnail_data)
+                    
+                    # Update NFO to use local thumbnail path
+                    logging.debug(f"✓ Thumbnail saved: {thumb_filename}")
+                    
+                except Exception as e:
+                    logging.warning(f"Could not download thumbnail: {e}")
+                    logging.debug(f"  URL: {thumbnail_url}")                    
 
 
 
